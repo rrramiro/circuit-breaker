@@ -1,8 +1,9 @@
-import cats.effect.{ExitCode, Async}
+import cats.effect.{Async, ExitCode}
 import cats.implicits._
 import monix.eval.Task
 import monix.eval.TaskApp
 import monix.catnap._
+import monix.reactive.Observable
 //import monix.execution.Scheduler.Implicits.global
 
 import scala.concurrent.Await
@@ -28,7 +29,7 @@ object CBTEST extends TaskApp {
     val resetTimeout = 5.seconds
     val circuitBreaker = CircuitBreaker[Task]
       .of(
-        maxFailures = 5,
+        maxFailures = 1,
         resetTimeout = resetTimeout,
         exponentialBackoffFactor = 1,
         maxResetTimeout = 30.seconds,
@@ -57,7 +58,7 @@ object CBTEST extends TaskApp {
       }
     }
 
-    val problematic2: Task[Unit] = Task.raiseError(CustomError("error"))
+    val problematic2: Task[Unit] = Task.defer(Task.raiseError(CustomError("error")))
 
     def protectWithRetry2[F[_], A](task: F[A], cb: CircuitBreaker[F])(implicit
         F: Async[F]
@@ -97,8 +98,28 @@ object CBTEST extends TaskApp {
       )
     }
 
+    def protectWithRetry3[A](
+                             task: Task[A],
+                             cb: CircuitBreaker[Task]
+                           )(implicit scheduler: Scheduler): Task[A] = {
+      cb.protect(task)
+        .onErrorRestartLoop(0) { (e, times, retry) =>
+          if (times < 10) {
+            (cb.state >>= (s => Task(println(s"On error retry $times times : ${s}")))) *>
+              Task.suspend {
+                (Task.sleep(resetTimeout.mul(2).minus(resetTimeout.div(2))) *> cb.protect(Task.unit)).startAndForget
+              } *>
+              cb.awaitClose *>
+              Task(println(s"after awaitClose")) *>
+              retry(times + 1)
+          } else {
+            Task(println(s"On stop retry $e")) *> Task.raiseError(e)
+          }
+        }
+    }
+
     {
-      circuitBreaker >>= (cb => protectWithRetry(problematic2, cb)(scheduler))
+      circuitBreaker >>= (cb => protectWithRetry3(problematic2, cb)(scheduler))
     }.as(ExitCode.Success)
   }
 
