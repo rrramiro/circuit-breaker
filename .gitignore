@@ -1,0 +1,9 @@
+.idea
+.bloop
+.metals
+.bsp
+.history
+.vscode
+.theia
+metals.sbt
+target
